@@ -54,16 +54,21 @@ function statusLabel(status = 'pending') {
 }
 
 function roleDashboard(role) {
-  return role === 'student' ? 'studentDashboard' : 'adminDashboard'
+  if (role === 'student') return 'studentDashboard'
+  return role === 'faculty' ? 'facultyDashboard' : 'adminDashboard'
 }
 
 function ProjectPortal() {
   const [page, setPage] = useState('home')
   const [user, setUser] = useState(null)
+  const [authRole, setAuthRole] = useState('student')
   const [token, setToken] = useState('')
   const [authReady, setAuthReady] = useState(false)
   const [projects, setProjects] = useState([])
   const [projectsLoading, setProjectsLoading] = useState(true)
+  const [accounts, setAccounts] = useState([])
+  const [accountsLoading, setAccountsLoading] = useState(false)
+  const [accountSaving, setAccountSaving] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [error, setError] = useState('')
@@ -96,7 +101,7 @@ function ProjectPortal() {
 
   useEffect(() => {
     let active = true
-    const isDataPage = ['home', 'viewProjects', 'studentDashboard', 'adminDashboard', 'manageProjects'].includes(page)
+    const isDataPage = ['home', 'viewProjects', 'studentDashboard', 'facultyDashboard', 'adminDashboard', 'manageProjects'].includes(page)
     if (!isDataPage) return undefined
 
     const shouldLoadPublic = page === 'home' || (page === 'viewProjects' && !token)
@@ -114,8 +119,21 @@ function ProjectPortal() {
     return () => { active = false }
   }, [page, token])
 
+  useEffect(() => {
+    let active = true
+    if (page !== 'adminDashboard' || user?.role !== 'admin') return undefined
+
+    apiRequest('/users', { token })
+      .then((data) => {
+        if (active) setAccounts(data)
+      })
+      .catch((loadError) => active && setError(loadError.message))
+      .finally(() => active && setAccountsLoading(false))
+
+    return () => { active = false }
+  }, [page, token, user])
+
   const isStaff = user && ['faculty', 'admin'].includes(user.role)
-  const pendingProjects = projects.filter((project) => project.status === 'pending')
   const filteredProjects = projects.filter((project) => {
     const matchesText = [project.title, project.category, project.summary, project.student?.name]
       .filter(Boolean)
@@ -123,14 +141,19 @@ function ProjectPortal() {
     return matchesText && (statusFilter === 'all' || project.status === statusFilter)
   })
 
-  const navigate = (nextPage) => {
-    const protectedPages = ['studentDashboard', 'addProject', 'adminDashboard', 'manageProjects']
+  const navigate = (nextPage, role) => {
+    if (role) setAuthRole(role)
+    const protectedPages = ['studentDashboard', 'addProject', 'facultyDashboard', 'adminDashboard', 'manageProjects']
     if (protectedPages.includes(nextPage) && !token) {
       setPage('login')
-    } else if (['adminDashboard', 'manageProjects'].includes(nextPage) && !isStaff) {
-      setPage(user ? 'studentDashboard' : 'login')
+    } else if (nextPage === 'facultyDashboard' && user?.role !== 'faculty') {
+      setPage(user ? roleDashboard(user.role) : 'login')
+    } else if (nextPage === 'manageProjects' && !isStaff) {
+      setPage(user ? roleDashboard(user.role) : 'login')
+    } else if (nextPage === 'adminDashboard' && user?.role !== 'admin') {
+      setPage(user ? roleDashboard(user.role) : 'login')
     } else if (['studentDashboard', 'addProject'].includes(nextPage) && user?.role !== 'student') {
-      setPage(user ? 'adminDashboard' : 'login')
+      setPage(user ? roleDashboard(user.role) : 'login')
     } else {
       setPage(nextPage)
     }
@@ -138,8 +161,11 @@ function ProjectPortal() {
     setStatusFilter('all')
     setMobileMenuOpen(false)
     setError('')
-    if (['home', 'viewProjects', 'studentDashboard', 'adminDashboard', 'manageProjects'].includes(nextPage)) {
+    if (['home', 'viewProjects', 'studentDashboard', 'facultyDashboard', 'adminDashboard', 'manageProjects'].includes(nextPage)) {
       setProjectsLoading(true)
+    }
+    if (nextPage === 'adminDashboard' && user?.role === 'admin') {
+      setAccountsLoading(true)
     }
   }
 
@@ -153,10 +179,34 @@ function ProjectPortal() {
       setToken(result.token)
       setUser(result.user)
       setPage(roleDashboard(result.user.role))
+      setAccounts([])
+      setAccountsLoading(true)
       setProjectsLoading(true)
       setNotice(`Welcome back, ${result.user.name.split(' ')[0]}.`)
     } catch (loginError) {
       setError(loginError.message)
+    }
+  }
+
+  const handleCreateAccount = async (event) => {
+    event.preventDefault()
+    const values = Object.fromEntries(new FormData(event.currentTarget).entries())
+    setError('')
+    setAccountSaving(true)
+    try {
+      const account = await apiRequest('/users', {
+        token,
+        method: 'POST',
+        body: JSON.stringify(values),
+      })
+      setAccounts((current) => [account, ...current])
+      setNotice(`${account.role === 'faculty' ? 'Faculty' : 'Admin'} account created for ${account.name}.`)
+      return true
+    } catch (createError) {
+      setError(createError.message)
+      return false
+    } finally {
+      setAccountSaving(false)
     }
   }
 
@@ -174,9 +224,11 @@ function ProjectPortal() {
       localStorage.setItem('collector-token', result.token)
       setToken(result.token)
       setUser(result.user)
-      setPage('studentDashboard')
+      setPage(roleDashboard(result.user.role))
       setProjectsLoading(true)
-      setNotice('Your student account is ready. Submit your first project when you are ready.')
+      setNotice(result.user.role === 'faculty'
+        ? 'Your faculty account is ready. You can now review student submissions.'
+        : 'Your student account is ready. Submit your first project when you are ready.')
     } catch (registerError) {
       setError(registerError.message)
     }
@@ -187,6 +239,8 @@ function ProjectPortal() {
     setToken('')
     setUser(null)
     setProjects([])
+    setAccounts([])
+    setAccountsLoading(false)
     setPage('home')
     setNotice('You have signed out.')
   }
@@ -248,7 +302,11 @@ function ProjectPortal() {
       { id: 'studentDashboard', title: 'Student Dashboard', icon: LayoutDashboard },
       { id: 'addProject', title: 'Add Project', icon: Plus },
       { id: 'viewProjects', title: 'View Projects', icon: FolderKanban },
-    ] : isStaff ? [
+    ] : user?.role === 'faculty' ? [
+      { id: 'facultyDashboard', title: 'Faculty Dashboard', icon: LayoutDashboard },
+      { id: 'manageProjects', title: 'Manage Projects', icon: FolderKanban },
+      { id: 'viewProjects', title: 'View Projects', icon: Search },
+    ] : user?.role === 'admin' ? [
       { id: 'adminDashboard', title: 'Admin Dashboard', icon: LayoutDashboard },
       { id: 'manageProjects', title: 'Manage Projects', icon: FolderKanban },
       { id: 'viewProjects', title: 'View Projects', icon: Search },
@@ -256,17 +314,6 @@ function ProjectPortal() {
       { id: 'viewProjects', title: 'View Projects', icon: FolderKanban },
     ]),
   ]
-
-  const pageTitles = {
-    home: 'Project Showcase',
-    login: 'Login',
-    register: 'Registration',
-    studentDashboard: 'Student Dashboard',
-    addProject: editingProject ? 'Edit Project' : 'Add Project',
-    viewProjects: 'View Projects',
-    adminDashboard: 'Admin Dashboard',
-    manageProjects: 'Manage Projects',
-  }
 
   if (!authReady) return <div className="boot-screen"><span className="boot-mark"><GraduationCap size={24} /></span>Opening project workspace...</div>
 
@@ -298,15 +345,16 @@ function ProjectPortal() {
       <main className="portal-main">
         {error && <div className="portal-alert" role="alert"><CircleAlert size={18} /><span>{error}</span><button className="icon-only" aria-label="Dismiss alert" onClick={() => setError('')}><X size={16} /></button></div>}
         {notice && <div className="portal-notice" role="status"><CheckCircle2 size={17} /><span>{notice}</span><button className="icon-only" aria-label="Dismiss notice" onClick={() => setNotice('')}><X size={15} /></button></div>}
-        {page === 'home' && <HomePage projects={projects} loading={projectsLoading} onNavigate={navigate} />}
-        {page === 'login' && <LoginPage onSubmit={handleLogin} onRegister={() => navigate('register')} />}
-        {page === 'register' && <RegistrationPage onSubmit={handleRegister} onLogin={() => navigate('login')} />}
+        {page === 'home' && <HomePage projects={projects} loading={projectsLoading} user={user} onNavigate={navigate} />}
+        {page === 'login' && <LoginPage selectedRole={authRole} onRoleChange={setAuthRole} onSubmit={handleLogin} onRegister={() => navigate('register', authRole)} />}
+        {page === 'register' && <RegistrationPage selectedRole={authRole} onRoleChange={setAuthRole} onSubmit={handleRegister} onLogin={() => navigate('login', authRole)} />}
         {page === 'studentDashboard' && user?.role === 'student' && <StudentDashboard user={user} projects={projects} loading={projectsLoading} onNavigate={navigate} onView={setActiveProject} onEdit={(project) => { setEditingProject(project); setPage('addProject') }} />}
         {page === 'addProject' && user?.role === 'student' && <ProjectFormPage project={editingProject} onSubmit={handleSaveProject} onCancel={() => navigate('studentDashboard')} />}
         {page === 'viewProjects' && <ProjectsPage projects={filteredProjects} total={projects.length} loading={projectsLoading} user={user} search={search} onSearch={setSearch} statusFilter={statusFilter} onStatusFilter={setStatusFilter} onView={setActiveProject} onEdit={(project) => { setEditingProject(project); setPage('addProject') }} onDelete={handleDelete} onAdd={() => { setEditingProject(null); navigate('addProject') }} />}
-        {page === 'adminDashboard' && isStaff && <AdminDashboard projects={projects} loading={projectsLoading} onNavigate={navigate} onReview={setReviewProject} onView={setActiveProject} />}
+        {page === 'facultyDashboard' && user?.role === 'faculty' && <FacultyDashboard user={user} projects={projects} loading={projectsLoading} onNavigate={navigate} onReview={setReviewProject} onView={setActiveProject} />}
+        {page === 'adminDashboard' && user?.role === 'admin' && <AdminDashboard projects={projects} loading={projectsLoading} accounts={accounts} accountsLoading={accountsLoading} accountSaving={accountSaving} onCreateAccount={handleCreateAccount} onNavigate={navigate} onReview={setReviewProject} onView={setActiveProject} />}
         {page === 'manageProjects' && isStaff && <ManageProjects projects={filteredProjects} total={projects.length} loading={projectsLoading} search={search} onSearch={setSearch} statusFilter={statusFilter} onStatusFilter={setStatusFilter} onReview={setReviewProject} onView={setActiveProject} onDelete={handleDelete} />}
-        {!['home', 'login', 'register', 'studentDashboard', 'addProject', 'viewProjects', 'adminDashboard', 'manageProjects'].includes(page) && <HomePage projects={projects} loading={projectsLoading} onNavigate={navigate} />}
+        {!['home', 'login', 'register', 'studentDashboard', 'addProject', 'viewProjects', 'facultyDashboard', 'adminDashboard', 'manageProjects'].includes(page) && <HomePage projects={projects} loading={projectsLoading} onNavigate={navigate} />}
       </main>
 
       <footer className="portal-footer"><span>COLLECTOR APP-E <i>•</i> PROJECT SUBMISSION & REVIEW</span><span>Built for student ideas and faculty feedback.</span></footer>
@@ -316,22 +364,92 @@ function ProjectPortal() {
   )
 }
 
-function HomePage({ projects, loading, onNavigate }) {
+function HomePage({ projects, loading, user, onNavigate }) {
   const highlights = projects.slice(0, 3)
+  const workflows = [
+    {
+      role: 'student',
+      title: 'Student',
+      description: 'Share your work and follow its progress.',
+      icon: GraduationCap,
+      steps: ['Register or sign in', 'Student dashboard'],
+      actions: ['Submit project', 'Edit project', 'View status'],
+    },
+    {
+      role: 'faculty',
+      title: 'Faculty',
+      description: 'Explore student work and provide useful feedback.',
+      icon: Users,
+      steps: ['Register or sign in', 'Faculty dashboard'],
+      actions: ['View students', 'View projects', 'Review projects', 'Add remarks'],
+    },
+    {
+      role: 'admin',
+      title: 'Admin',
+      description: 'Oversee accounts, projects, and portal activity.',
+      icon: ShieldCheck,
+      steps: ['Admin sign in', 'Admin dashboard'],
+      actions: ['Manage students', 'Manage faculty', 'Manage projects', 'Approve faculty', 'View reports'],
+    },
+  ]
+
   return (
     <>
       <section className="home-hero">
         <div className="hero-copy">
-          <p className="eyebrow"><span className="eyebrow-dot" />A CAMPUS PROJECT EXCHANGE</p>
-          <h1>Good ideas deserve<br /><em>a place to go.</em></h1>
-          <p className="hero-description">Submit your work, get thoughtful faculty feedback, and discover what your campus is building.</p>
-          <div className="hero-actions"><button className="button button-coral" onClick={() => onNavigate('register')}>Start a project <ArrowRight size={16} /></button><button className="button button-outline" onClick={() => onNavigate('viewProjects')}>Explore projects <ArrowUpRight size={16} /></button></div>
-          <div className="hero-meta"><span><CheckCircle2 size={15} />Reviewed by faculty</span><span><Users size={15} />Built for campus teams</span></div>
+          <p className="eyebrow"><span className="eyebrow-dot" />PROJECT COLLECTOR APP</p>
+          <h1>One campus.<br /><em>Every project.</em></h1>
+          <p className="hero-description">A shared space for students to submit projects, faculty to review them, and admins to manage the campus portfolio.</p>
+          <div className="hero-actions"><button className="button button-coral" onClick={() => onNavigate('register', 'student')}>Get started <ArrowRight size={16} /></button><button className="button button-outline" onClick={() => onNavigate('viewProjects')}>Explore projects <ArrowUpRight size={16} /></button></div>
+          <div className="hero-meta"><span><CheckCircle2 size={15} />Student submissions</span><span><Users size={15} />Faculty review</span><span><ShieldCheck size={15} />Admin oversight</span></div>
         </div>
-        <div className="hero-board" aria-label="Project showcase preview">
-          <div className="board-top"><span>RECENTLY REVIEWED</span><span className="board-live"><i /> LIVE SHOWCASE</span></div>
-          <div className="board-visual"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><span className="visual-center"><FolderKanban size={36} /></span><span className="visual-tag tag-one">IDEA</span><span className="visual-tag tag-two">BUILD</span><span className="visual-tag tag-three">SHARE</span></div>
-          <div className="board-bottom"><span><strong>{projects.length.toString().padStart(2, '0')}</strong><small>FEATURED PROJECTS</small></span><span className="board-arrow"><ArrowUpRight size={20} /></span></div>
+        <div className="hero-board hero-workflow-board" aria-label="Project lifecycle">
+          <div className="board-top"><span>THE PROJECT JOURNEY</span><span className="board-live"><i /> THREE CONNECTED ROLES</span></div>
+          <div className="workflow-journey">
+            <span className="journey-step"><GraduationCap size={19} /><strong>Submit</strong><small>Student</small></span>
+            <span className="journey-connector"><ArrowRight size={15} /></span>
+            <span className="journey-step"><Users size={19} /><strong>Review</strong><small>Faculty</small></span>
+            <span className="journey-connector"><ArrowRight size={15} /></span>
+            <span className="journey-step"><ShieldCheck size={19} /><strong>Manage</strong><small>Admin</small></span>
+          </div>
+          <div className="board-bottom"><span><strong>{projects.length.toString().padStart(2, '0')}</strong><small>PROJECTS IN THE PORTAL</small></span><span className="board-arrow"><ArrowUpRight size={20} /></span></div>
+        </div>
+      </section>
+
+      <section className="role-flow-section">
+        <div className="section-title-row"><div><p className="eyebrow">HOW THE PORTAL WORKS</p><h2>Choose your workspace</h2></div><span className="role-flow-caption">Three roles. One project journey.</span></div>
+        <div className="role-flow-grid">
+          {workflows.map(({ role, title, description, icon: Icon, steps, actions }, index) => {
+            const dashboard = roleDashboard(role)
+            const isCurrentRole = user?.role === role
+            return (
+              <article className={`role-flow-card role-flow-${role}`} key={role}>
+                <div className="role-flow-heading">
+                  <span className="role-flow-icon"><Icon size={20} /></span>
+                  <span className="role-flow-index">0{index + 1}</span>
+                  <h3>{title}</h3>
+                  <p>{description}</p>
+                </div>
+                <div className="role-flow-steps">
+                  {steps.map((step, stepIndex) => (
+                    <div className="role-flow-step" key={step}>
+                      <span className="role-flow-node">{stepIndex + 1}</span>
+                      <span>{step}</span>
+                    </div>
+                  ))}
+                </div>
+                <ul className="role-flow-actions">
+                  {actions.map((action) => <li key={action}><Check size={14} />{action}</li>)}
+                </ul>
+                <div className="role-flow-buttons">
+                  {isCurrentRole
+                    ? <button className="button button-dark" onClick={() => onNavigate(dashboard)}><LayoutDashboard size={15} /> Open dashboard</button>
+                    : <button className="button button-dark" onClick={() => onNavigate('login', role)}>{role === 'admin' ? 'Admin login' : `${title} login`} <ArrowRight size={15} /></button>}
+                  {role !== 'admin' && !isCurrentRole && <button className="role-flow-register" onClick={() => onNavigate('register', role)}>Register as {title.toLowerCase()}</button>}
+                </div>
+              </article>
+            )
+          })}
         </div>
       </section>
 
@@ -353,20 +471,20 @@ function FeaturedProject({ project, index }) {
   )
 }
 
-function LoginPage({ onSubmit, onRegister }) {
+function LoginPage({ selectedRole, onRoleChange, onSubmit, onRegister }) {
   return (
     <section className="auth-layout">
       <div className="auth-aside"><span className="auth-aside-mark"><GraduationCap size={23} /></span><p className="eyebrow">COLLECTOR APP-E</p><h1>Pick up where<br />your idea left off.</h1><p>Sign in to track a submission, respond to feedback, or review the next campus project.</p><div className="auth-aside-rule" /><span className="auth-aside-foot">STUDENT <i /> FACULTY <i /> ADMIN</span></div>
-      <div className="auth-form-panel"><div className="auth-form-heading"><p className="eyebrow">WELCOME BACK</p><h2>Sign in</h2><p>Enter your account details to continue.</p></div><form className="portal-form" onSubmit={onSubmit}><label>Email address<input name="email" type="email" autoComplete="email" required placeholder="you@college.edu" /></label><label>Password<input name="password" type="password" autoComplete="current-password" required placeholder="Enter your password" /></label><button className="button button-dark form-submit" type="submit">Sign in <ArrowRight size={16} /></button></form><p className="auth-switch">New to the portal? <button onClick={onRegister}>Create a student account</button></p></div>
+      <div className="auth-form-panel"><div className="auth-form-heading"><p className="eyebrow">WELCOME BACK</p><h2>Sign in</h2><p>Choose your account type, then enter your account details.</p></div><form className="portal-form" onSubmit={onSubmit}><label>Sign in as<select name="role" required value={selectedRole} onChange={(event) => onRoleChange(event.target.value)}><option value="student">Student</option><option value="faculty">Faculty</option><option value="admin">Admin</option></select></label><label>Email address<input name="email" type="email" autoComplete="email" required placeholder="you@college.edu" /></label><label>Password<input name="password" type="password" autoComplete="current-password" required placeholder="Enter your password" /></label><button className="button button-dark form-submit" type="submit">Sign in <ArrowRight size={16} /></button></form><p className="auth-switch">New to the portal? <button onClick={onRegister}>Create an account</button></p></div>
     </section>
   )
 }
 
-function RegistrationPage({ onSubmit, onLogin }) {
+function RegistrationPage({ selectedRole, onRoleChange, onSubmit, onLogin }) {
   return (
     <section className="auth-layout register-layout">
-      <div className="auth-aside"><span className="auth-aside-mark"><GraduationCap size={23} /></span><p className="eyebrow">YOUR NEXT PROJECT STARTS HERE</p><h1>Make the work<br />easy to share.</h1><p>Create a student account to submit an idea and keep every review in one place.</p><div className="auth-aside-rule" /><span className="auth-aside-foot">ONE ACCOUNT <i /> EVERY PROJECT</span></div>
-      <div className="auth-form-panel"><div className="auth-form-heading"><p className="eyebrow">STUDENT REGISTRATION</p><h2>Create account</h2><p>Faculty and admin access is managed by your institution.</p></div><form className="portal-form" onSubmit={onSubmit}><label>Full name<input name="name" autoComplete="name" minLength="2" maxLength="80" required placeholder="Your name" /></label><label>College email<input name="email" type="email" autoComplete="email" required placeholder="you@college.edu" /></label><label>Password<input name="password" type="password" autoComplete="new-password" minLength="8" required placeholder="At least 8 characters" /></label><label>Confirm password<input name="confirmPassword" type="password" autoComplete="new-password" minLength="8" required placeholder="Repeat your password" /></label><button className="button button-dark form-submit" type="submit">Create student account <ArrowRight size={16} /></button></form><p className="auth-switch">Already registered? <button onClick={onLogin}>Sign in</button></p></div>
+      <div className="auth-aside"><span className="auth-aside-mark"><GraduationCap size={23} /></span><p className="eyebrow">JOIN THE CAMPUS PROJECT PORTAL</p><h1>Make the work<br />easy to share.</h1><p>Students can share projects; faculty can review submissions and provide feedback.</p><div className="auth-aside-rule" /><span className="auth-aside-foot">STUDENT <i /> FACULTY</span></div>
+      <div className="auth-form-panel"><div className="auth-form-heading"><p className="eyebrow">ACCOUNT REGISTRATION</p><h2>Create account</h2><p>Choose your account type. Admin accounts are created by an administrator.</p></div><form className="portal-form" onSubmit={onSubmit}><label>Register as<select name="role" required value={selectedRole === 'faculty' ? 'faculty' : 'student'} onChange={(event) => onRoleChange(event.target.value)}><option value="student">Student</option><option value="faculty">Faculty</option></select></label><label>Full name<input name="name" autoComplete="name" minLength="2" maxLength="80" required placeholder="Your name" /></label><label>College email<input name="email" type="email" autoComplete="email" required placeholder="you@college.edu" /></label><label>Password<input name="password" type="password" autoComplete="new-password" minLength="8" required placeholder="At least 8 characters" /></label><label>Confirm password<input name="confirmPassword" type="password" autoComplete="new-password" minLength="8" required placeholder="Repeat your password" /></label><button className="button button-dark form-submit" type="submit">Create account <ArrowRight size={16} /></button></form><p className="auth-switch">Already registered? <button onClick={onLogin}>Sign in</button></p></div>
     </section>
   )
 }
@@ -404,11 +522,90 @@ function ProjectRow({ project, onView, onEdit }) {
   return <article className="project-row"><span className="row-project-icon"><FolderKanban size={18} /></span><div className="row-project-info"><strong>{project.title}</strong><small>{project.category} <i /> Updated {dateLabel(project.updatedAt)}</small></div><StatusPill status={project.status} /><button className="icon-only" aria-label={`View ${project.title}`} onClick={() => onView(project)}><ChevronRight size={18} /></button>{['pending', 'rejected'].includes(project.status) && <button className="icon-only" aria-label={`Edit ${project.title}`} onClick={() => onEdit(project)}><Pencil size={15} /></button>}</article>
 }
 
-function AdminDashboard({ projects, loading, onNavigate, onReview, onView }) {
+function FacultyDashboard({ user, projects, loading, onNavigate, onReview, onView }) {
+  const pending = projects.filter((project) => project.status === 'pending').length
+  const reviewed = projects.length - pending
+  const studentCount = new Set(projects.map((project) => project.student?._id).filter(Boolean)).size
+
+  return <div className="page-stack">
+    <PageIntro eyebrow="FACULTY REVIEW WORKSPACE" title={`Welcome, ${user.name.split(' ')[0]}.`} description="Review student work, see who submitted each project, and share feedback with clear next steps." action={<button className="button button-dark" onClick={() => onNavigate('manageProjects')}>All submissions <ArrowRight size={15} /></button>} />
+    <section className="metric-row faculty-metrics">
+      <Metric icon={FolderKanban} label="Student submissions" value={projects.length} tone="blue" />
+      <Metric icon={Clock3} label="Awaiting your review" value={pending} tone="yellow" />
+      <Metric icon={Users} label="Students represented" value={studentCount} tone="green" />
+      <Metric icon={CheckCircle2} label="Reviewed submissions" value={reviewed} tone="coral" />
+    </section>
+    <section className="section-panel">
+      <div className="section-title-row compact-title">
+        <div><p className="eyebrow">STUDENT WORK</p><h2>Recent submissions</h2></div>
+        <button className="text-link" onClick={() => onNavigate('manageProjects')}>Review all submissions <ArrowRight size={15} /></button>
+      </div>
+      {loading ? <div className="portal-loading"><span className="spinner" />Loading student submissions...</div> : projects.length ? <div className="faculty-submission-list">
+        {projects.slice(0, 8).map((project) => <article className="faculty-submission" key={project._id}>
+          <div className="faculty-submission-student"><span className="queue-icon"><GraduationCap size={17} /></span><span><strong>{project.student?.name || 'Student'}</strong><small>{project.student?.email || 'Student account'}</small></span></div>
+          <div className="faculty-submission-project"><strong>{project.title}</strong><small>{project.category} <i /> Submitted {dateLabel(project.createdAt)}</small></div>
+          <StatusPill status={project.status} />
+          <div className="faculty-submission-actions">
+            <button className="button button-outline button-small" onClick={() => onView(project)}>Student details</button>
+            <button className="button button-coral button-small" onClick={() => onReview(project)}>{project.status === 'pending' ? 'Review' : 'Update'}</button>
+          </div>
+        </article>)}
+      </div> : <EmptyProjects title="No student submissions yet" message="Student projects will appear here when they are submitted." />}
+    </section>
+  </div>
+}
+
+function AdminDashboard({ projects, loading, accounts, accountsLoading, accountSaving, onCreateAccount, onNavigate, onReview, onView }) {
+  const [registeringRole, setRegisteringRole] = useState('')
   const pending = projects.filter((project) => project.status === 'pending')
-  const active = projects.filter((project) => ['approved', 'in-progress'].includes(project.status)).length
-  const completed = projects.filter((project) => project.status === 'completed').length
-  return <div className="page-stack"><PageIntro eyebrow="FACULTY & ADMIN WORKSPACE" title="Admin dashboard" description="Review submissions, follow project progress, and keep the campus showcase current." action={<button className="button button-dark" onClick={() => onNavigate('manageProjects')}>Manage projects <ArrowRight size={15} /></button>} /><section className="metric-row"><Metric icon={FolderKanban} label="Total submissions" value={projects.length} tone="blue" /><Metric icon={Clock3} label="Waiting for review" value={pending.length} tone="yellow" /><Metric icon={CheckCircle2} label="Approved / active" value={active} tone="green" /><Metric icon={Users} label="Completed projects" value={completed} tone="coral" /></section><section className="section-panel"><div className="section-title-row compact-title"><div><p className="eyebrow">REVIEW QUEUE</p><h2>Needs your attention</h2></div><button className="text-link" onClick={() => onNavigate('manageProjects')}>Open project manager <ArrowRight size={15} /></button></div>{loading ? <div className="portal-loading"><span className="spinner" />Loading submissions...</div> : pending.length ? <div className="review-queue">{pending.slice(0, 5).map((project) => <div className="queue-row" key={project._id}><div className="queue-project"><span className="queue-icon"><FileText size={17} /></span><span><strong>{project.title}</strong><small>{project.student?.name} <i /> {project.category} <i /> {dateLabel(project.createdAt)}</small></span></div><button className="button button-outline button-small" onClick={() => onView(project)}>View</button><button className="button button-coral button-small" onClick={() => onReview(project)}>Review</button></div>)}</div> : <EmptyProjects title="Review queue is clear" message="New student submissions will appear here." />}</section></div>
+  const students = accounts.filter((account) => account.role === 'student').length
+  const faculty = accounts.filter((account) => account.role === 'faculty').length
+
+  return <div className="page-stack">
+    <PageIntro eyebrow="ADMINISTRATION" title="Admin dashboard" description="Monitor submissions and view student, faculty, and admin accounts across the portal." action={<button className="button button-dark" onClick={() => onNavigate('manageProjects')}>Manage projects <ArrowRight size={15} /></button>} />
+    <section className="metric-row">
+      <Metric icon={FolderKanban} label="Total submissions" value={projects.length} tone="blue" />
+      <Metric icon={Clock3} label="Waiting for review" value={pending.length} tone="yellow" />
+      <Metric icon={GraduationCap} label="Student accounts" value={students} tone="green" />
+      <Metric icon={Users} label="Faculty accounts" value={faculty} tone="coral" />
+    </section>
+    <section className="section-panel">
+      <div className="section-title-row compact-title"><div><p className="eyebrow">ACCOUNT DIRECTORY</p><h2>Students and faculty</h2></div><div className="account-register-actions"><button className="button button-outline button-small" onClick={() => setRegisteringRole('faculty')}>Register faculty</button><button className="button button-dark button-small" onClick={() => setRegisteringRole('admin')}>Register admin</button></div></div>
+      {registeringRole && <AccountRegistrationForm role={registeringRole} saving={accountSaving} onSubmit={onCreateAccount} onCancel={() => setRegisteringRole('')} />}
+      {accountsLoading ? <div className="portal-loading"><span className="spinner" />Loading accounts...</div> : accounts.length ? <div className="account-directory">
+        {accounts.map((account) => <article className="account-row" key={account._id}>
+          <span className={`account-role-icon account-role-${account.role}`}>{account.role === 'student' ? <GraduationCap size={17} /> : account.role === 'faculty' ? <Users size={17} /> : <ShieldCheck size={17} />}</span>
+          <span className="account-details"><strong>{account.name}</strong><small>{account.email}</small></span>
+          <span className={`account-role-badge account-role-badge-${account.role}`}>{account.role}</span>
+          <small className="account-created">Joined {dateLabel(account.createdAt)}</small>
+        </article>)}
+      </div> : <EmptyProjects title="No accounts to show" message="Student and faculty accounts will appear here." />}
+    </section>
+    <section className="section-panel">
+      <div className="section-title-row compact-title"><div><p className="eyebrow">REVIEW QUEUE</p><h2>Pending submissions</h2></div><button className="text-link" onClick={() => onNavigate('manageProjects')}>Open project manager <ArrowRight size={15} /></button></div>
+      {loading ? <div className="portal-loading"><span className="spinner" />Loading submissions...</div> : pending.length ? <div className="review-queue">{pending.slice(0, 5).map((project) => <div className="queue-row" key={project._id}><div className="queue-project"><span className="queue-icon"><FileText size={17} /></span><span><strong>{project.title}</strong><small>{project.student?.name} <i /> {project.category} <i /> {dateLabel(project.createdAt)}</small></span></div><button className="button button-outline button-small" onClick={() => onView(project)}>View</button><button className="button button-coral button-small" onClick={() => onReview(project)}>Review</button></div>)}</div> : <EmptyProjects title="Review queue is clear" message="New student submissions will appear here." />}
+    </section>
+  </div>
+}
+
+function AccountRegistrationForm({ role, saving, onSubmit, onCancel }) {
+  const roleTitle = role === 'faculty' ? 'Faculty' : 'Admin'
+
+  const handleSubmit = async (event) => {
+    const created = await onSubmit(event)
+    if (created) onCancel()
+  }
+
+  return <form className="account-registration-form portal-form" onSubmit={handleSubmit}>
+    <div className="account-registration-heading"><div><p className="eyebrow">{roleTitle.toUpperCase()} REGISTRATION</p><h3>Create {roleTitle.toLowerCase()} account</h3></div><button type="button" className="icon-only" aria-label="Close registration form" onClick={onCancel}><X size={16} /></button></div>
+    <input type="hidden" name="role" value={role} />
+    <div className="account-registration-fields">
+      <label>Full name<input name="name" autoComplete="name" minLength="2" maxLength="80" required placeholder={`${roleTitle} name`} /></label>
+      <label>College email<input name="email" type="email" autoComplete="email" required placeholder="you@college.edu" /></label>
+      <label>Temporary password<input name="password" type="password" autoComplete="new-password" minLength="8" required placeholder="At least 8 characters" /></label>
+    </div>
+    <div className="account-registration-footer"><small>Only an admin can create staff accounts.</small><div><button type="button" className="button button-outline button-small" onClick={onCancel}>Cancel</button><button className="button button-dark button-small" type="submit" disabled={saving}>{saving ? 'Creating…' : `Create ${roleTitle.toLowerCase()} account`}</button></div></div>
+  </form>
 }
 
 function ManageProjects({ projects, total, loading, search, onSearch, statusFilter, onStatusFilter, onReview, onView, onDelete }) {
@@ -427,7 +624,7 @@ function EmptyProjects({ title, message, action, onAction }) {
 function ProjectDetails({ project, user, onClose, onEdit, onDelete }) {
   const canEdit = user?.role === 'student' && ['pending', 'rejected'].includes(project.status)
   const canDelete = user && (['faculty', 'admin'].includes(user.role) || (user.role === 'student' && ['pending', 'rejected'].includes(project.status)))
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title"><div className="dialog-top"><div><p className="eyebrow">PROJECT DETAILS</p><StatusPill status={project.status} /></div><button className="icon-only" aria-label="Close project details" onClick={onClose}><X size={18} /></button></div><h2 id="project-dialog-title">{project.title}</h2><p className="dialog-byline">Submitted by {project.student?.name || 'Student'} on {dateLabel(project.createdAt)}</p><p className="dialog-summary">{project.summary}</p><div className="dialog-detail-grid"><div><span>CATEGORY</span><strong>{project.category}</strong></div><div><span>SUBMITTED</span><strong>{dateLabel(project.createdAt)}</strong></div></div>{project.technologies?.length > 0 && <div className="dialog-field"><span>TECHNOLOGIES</span><div className="tag-list">{project.technologies.map((technology) => <span key={technology}>{technology}</span>)}</div></div>}{project.feedback && <div className="feedback-box"><p className="eyebrow">FACULTY FEEDBACK</p><p>{project.feedback}</p>{project.reviewedBy?.name && <small>Reviewed by {project.reviewedBy.name}</small>}</div>}<div className="dialog-links">{project.repositoryUrl && <a href={project.repositoryUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />Repository</a>}{project.demoUrl && <a href={project.demoUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />Live demo</a>}</div><div className="dialog-actions">{canDelete && <button className="button button-outline delete-button" onClick={() => onDelete(project)}><Trash2 size={15} />Delete</button>}{canEdit && <button className="button button-coral" onClick={() => onEdit(project)}><Pencil size={15} />Edit project</button>}<button className="button button-dark" onClick={onClose}>Close</button></div></section></div>
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title"><div className="dialog-top"><div><p className="eyebrow">PROJECT DETAILS</p><StatusPill status={project.status} /></div><button className="icon-only" aria-label="Close project details" onClick={onClose}><X size={18} /></button></div><h2 id="project-dialog-title">{project.title}</h2><p className="dialog-byline">Submitted by {project.student?.name || 'Student'}{user && user.role !== 'student' && project.student?.email ? ` (${project.student.email})` : ''} on {dateLabel(project.createdAt)}</p><p className="dialog-summary">{project.summary}</p><div className="dialog-detail-grid"><div><span>CATEGORY</span><strong>{project.category}</strong></div><div><span>SUBMITTED</span><strong>{dateLabel(project.createdAt)}</strong></div></div>{project.technologies?.length > 0 && <div className="dialog-field"><span>TECHNOLOGIES</span><div className="tag-list">{project.technologies.map((technology) => <span key={technology}>{technology}</span>)}</div></div>}{project.feedback && <div className="feedback-box"><p className="eyebrow">FACULTY FEEDBACK</p><p>{project.feedback}</p>{project.reviewedBy?.name && <small>Reviewed by {project.reviewedBy.name}</small>}</div>}<div className="dialog-links">{project.repositoryUrl && <a href={project.repositoryUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />Repository</a>}{project.demoUrl && <a href={project.demoUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />Live demo</a>}</div><div className="dialog-actions">{canDelete && <button className="button button-outline delete-button" onClick={() => onDelete(project)}><Trash2 size={15} />Delete</button>}{canEdit && <button className="button button-coral" onClick={() => onEdit(project)}><Pencil size={15} />Edit project</button>}<button className="button button-dark" onClick={onClose}>Close</button></div></section></div>
 }
 
 function ReviewDialog({ project, onClose, onSubmit }) {
